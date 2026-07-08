@@ -1,0 +1,134 @@
+name: Issue Triage
+
+on:
+    workflow_call:
+        inputs:
+            discussions_url:
+                required: true
+                type: string
+            issue_author:
+                required: true
+                type: string
+            issue_number:
+                required: true
+                type: number
+            issue_type_name:
+                required: true
+                type: string
+        secrets:
+            gh_app_private_key:
+                required: true
+
+jobs:
+    classify-issue:
+        runs-on: ubuntu-latest
+        outputs:
+            is_organization_member: ${{ steps.classify.outputs.is_organization_member }}
+        steps:
+            - name: Create GitHub App token
+              id: app-token
+              uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+              with:
+                  client-id: ${{ vars.GH_APP_CLIENT_ID }}
+                  permission-contents: read
+                  permission-members: read
+                  private-key: ${{ secrets.gh_app_private_key }}
+
+            - name: Checkout workflows repository
+              uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+              with:
+                  persist-credentials: false
+                  ref: ${{ github.workflow_sha }}
+                  repository: talentear-hq/workflows
+                  token: ${{ steps.app-token.outputs.token }}
+
+            - name: Validate required issue type
+              env:
+                  ISSUE_TYPE_NAME: ${{ inputs.issue_type_name }}
+              run: bash ./.github/scripts/validate-issue-type-input.sh
+
+            - name: Classify issue
+              id: classify
+              env:
+                  GH_TOKEN: ${{ steps.app-token.outputs.token }}
+                  ISSUE_AUTHOR: ${{ inputs.issue_author }}
+                  ORGANIZATION_NAME: ${{ github.repository_owner }}
+              run: bash ./.github/scripts/classify-issue-author.sh
+
+    handle-non-member-issue:
+        needs: classify-issue
+        if: ${{ needs.classify-issue.outputs.is_organization_member == 'false' }}
+        runs-on: ubuntu-latest
+        steps:
+            - name: Create GitHub App token
+              id: app-token
+              uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+              with:
+                  client-id: ${{ vars.GH_APP_CLIENT_ID }}
+                  permission-contents: read
+                  permission-issues: write
+                  private-key: ${{ secrets.gh_app_private_key }}
+
+            - name: Checkout workflows repository
+              uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+              with:
+                  persist-credentials: false
+                  ref: ${{ github.workflow_sha }}
+                  repository: talentear-hq/workflows
+                  token: ${{ steps.app-token.outputs.token }}
+
+            - name: Evaluate issue type for non-member
+              id: non_member_policy
+              env:
+                  ISSUE_TYPE_NAME: ${{ inputs.issue_type_name }}
+                  NON_MEMBER_ALLOWED_ISSUE_TYPES: ${{ vars.NON_MEMBER_ALLOWED_ISSUE_TYPES }}
+              run: bash ./.github/scripts/evaluate-non-member-issue-type.sh
+
+            - name: Add needs triage label to non-organization-member issue
+              if: ${{ steps.non_member_policy.outputs.is_allowed_non_member_issue_type == 'true' }}
+              env:
+                  GH_TOKEN: ${{ steps.app-token.outputs.token }}
+                  ISSUE_NUMBER: ${{ inputs.issue_number }}
+                  TRIAGE_LABEL_NAME: ${{ vars.NEEDS_TRIAGE_LABEL }}
+              run: bash ./.github/scripts/add-needs-triage-label.sh
+
+            - name: Close non-organization-member issue
+              if: ${{ steps.non_member_policy.outputs.is_allowed_non_member_issue_type != 'true' }}
+              env:
+                  CONTRIBUTING_GUIDELINES_URL: ${{ vars.CONTRIBUTING_GUIDELINES_URL }}
+                  DISCUSSIONS_URL: ${{ inputs.discussions_url }}
+                  GH_TOKEN: ${{ steps.app-token.outputs.token }}
+                  ISSUE_AUTHOR: ${{ inputs.issue_author }}
+                  ISSUE_NUMBER: ${{ inputs.issue_number }}
+                  NON_MEMBER_ALLOWED_ISSUE_TYPES: ${{ vars.NON_MEMBER_ALLOWED_ISSUE_TYPES }}
+              run: bash ./.github/scripts/close-non-member-issue.sh
+
+    handle-member-issue:
+        needs: classify-issue
+        if: ${{ needs.classify-issue.outputs.is_organization_member == 'true' }}
+        runs-on: ubuntu-latest
+        steps:
+            - name: Create GitHub App token
+              id: app-token
+              uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+              with:
+                  client-id: ${{ vars.GH_APP_CLIENT_ID }}
+                  permission-contents: read
+                  permission-issues: read
+                  permission-organization-projects: write
+                  private-key: ${{ secrets.gh_app_private_key }}
+
+            - name: Checkout workflows repository
+              uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+              with:
+                  persist-credentials: false
+                  ref: ${{ github.workflow_sha }}
+                  repository: talentear-hq/workflows
+                  token: ${{ steps.app-token.outputs.token }}
+
+            - name: Add organization member issue to project
+              id: add-to-project
+              uses: actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd # v2.0.0
+              with:
+                  github-token: ${{ steps.app-token.outputs.token }}
+                  project-url: ${{ vars.PROJECT_URL }}
